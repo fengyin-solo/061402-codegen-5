@@ -149,21 +149,13 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import QuestBoard from './QuestBoard.vue';
 import { useSurvivalStore } from '../store';
 
+const WORLD_STATE_KEY = 'island_survival_world_v1';
+
 const survivalStore = useSurvivalStore();
 const logListRef = ref(null);
 
-const resources = ref({
-  food: 100,
-  water: 100,
-  wood: 100,
-  stone: 100
-});
-
-const messageLog = ref([
-  { time: '00:00', content: '你来到了一个荒岛，开始你的生存之旅吧！' }
-]);
-
-const mapGrid = ref([
+const INITIAL_RESOURCES = { food: 100, water: 100, wood: 100, stone: 100 };
+const INITIAL_MAP_GRID = [
   { type: 'forest', icon: '🌳', explored: true },
   { type: 'forest', icon: '🌳', explored: true },
   { type: 'mountain', icon: '🏔️', explored: false },
@@ -173,10 +165,51 @@ const mapGrid = ref([
   { type: 'ocean', icon: '🌊', explored: false },
   { type: 'mountain', icon: '🏔️', explored: false },
   { type: 'forest', icon: '🌳', explored: false }
-]);
+];
+const INITIAL_MESSAGE_LOG = [
+  { time: '00:00', content: '你来到了一个荒岛，开始你的生存之旅吧！' }
+];
+
+const resources = ref({ ...INITIAL_RESOURCES });
+const messageLog = ref([...INITIAL_MESSAGE_LOG]);
+const mapGrid = ref(INITIAL_MAP_GRID.map(c => ({ ...c })));
 
 const totalCells = computed(() => mapGrid.value.length);
 const exploredCount = computed(() => mapGrid.value.filter(cell => cell.explored).length);
+
+const deepClone = (obj) => JSON.parse(JSON.stringify(obj));
+
+const _loadWorldState = () => {
+  try {
+    const raw = localStorage.getItem(WORLD_STATE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.resources && parsed.mapGrid && parsed.messageLog) {
+      return parsed;
+    }
+    return null;
+  } catch (e) {
+    console.error('Failed to load world state:', e);
+    return null;
+  }
+};
+
+const _saveWorldState = () => {
+  try {
+    const state = {
+      resources: deepClone(resources.value),
+      mapGrid: deepClone(mapGrid.value),
+      messageLog: deepClone(messageLog.value)
+    };
+    localStorage.setItem(WORLD_STATE_KEY, JSON.stringify(state));
+  } catch (e) {
+    console.error('Failed to save world state:', e);
+  }
+};
+
+const _clearWorldState = () => {
+  localStorage.removeItem(WORLD_STATE_KEY);
+};
 
 const scrollLogToBottom = async () => {
   await nextTick();
@@ -185,22 +218,23 @@ const scrollLogToBottom = async () => {
   }
 };
 
-const addMessage = (content) => {
+const addMessage = (content, autoSave = true) => {
   const now = new Date();
   const time = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
   messageLog.value.push({ time, content });
-  if (messageLog.value.length > 50) {
-    messageLog.value.shift();
+  if (messageLog.value.length > 100) {
+    messageLog.value.splice(0, messageLog.value.length - 100);
   }
   scrollLogToBottom();
+  if (autoSave) _saveWorldState();
 };
 
-const updateResourceQuestProgress = () => {
-  survivalStore.updateResourceProgress(resources.value);
+const updateResourceQuestProgress = (save = true) => {
+  survivalStore.updateResourceProgress(resources.value, save);
 };
 
-const updateExploreQuestProgress = () => {
-  survivalStore.updateExploreProgress(exploredCount.value);
+const updateExploreQuestProgress = (save = true) => {
+  survivalStore.updateExploreProgress(exploredCount.value, save);
 };
 
 const handleClaimReward = (rewards, quest) => {
@@ -217,6 +251,7 @@ const handleClaimReward = (rewards, quest) => {
   addMessage(`🎁 完成任务「${quest.title}」，获得奖励：${rewardList}`);
   
   updateResourceQuestProgress();
+  _saveWorldState();
 };
 
 const getResourceLabel = (key) => {
@@ -258,6 +293,7 @@ const performAction = (name, cost, gain, time, actionName) => {
     ElMessage.success(`${name}完成！`);
     
     updateResourceQuestProgress();
+    _saveWorldState();
   }, time);
   
   return true;
@@ -281,13 +317,19 @@ const mineStone = () => {
 
 const buildShelter = () => {
   if (performAction('建造庇护所', { wood: 50, stone: 30 }, {}, 300000, 'buildShelter')) {
-    addMessage('庇护所建造完成！你现在有了一个安全的住所。');
+    setTimeout(() => {
+      addMessage('庇护所建造完成！你现在有了一个安全的住所。');
+      _saveWorldState();
+    }, 300000);
   }
 };
 
 const craftTools = () => {
   if (performAction('制作工具', { wood: 20, stone: 10 }, {}, 120000, 'craftTools')) {
-    addMessage('工具制作完成！你的工作效率提高了。');
+    setTimeout(() => {
+      addMessage('工具制作完成！你的工作效率提高了。');
+      _saveWorldState();
+    }, 120000);
   }
 };
 
@@ -337,27 +379,65 @@ const exploreCell = (index) => {
       
       updateResourceQuestProgress();
       updateExploreQuestProgress();
+      _saveWorldState();
     }, 5000);
   }).catch(() => {
     addMessage('取消了探索');
   });
 };
 
+const _resetAll = () => {
+  _clearWorldState();
+  resources.value = { ...INITIAL_RESOURCES };
+  mapGrid.value = INITIAL_MAP_GRID.map(c => ({ ...c }));
+  messageLog.value = [...INITIAL_MESSAGE_LOG];
+};
+
 watch(resources, () => {
-  updateResourceQuestProgress();
+  updateResourceQuestProgress(false);
 }, { deep: true });
 
 onMounted(() => {
-  survivalStore.generateDailyQuests();
+  const worldState = _loadWorldState();
+  if (worldState) {
+    resources.value = deepClone(worldState.resources);
+    mapGrid.value = deepClone(worldState.mapGrid);
+    messageLog.value = deepClone(worldState.messageLog);
+  }
+
+  const initResources = deepClone(resources.value);
+  const initExploreCount = exploredCount.value;
+  const initActionCount = {};
+
+  const result = survivalStore.loadOrGenerateDailyQuests(initResources, initExploreCount, initActionCount);
+
+  if (!result.loaded) {
+    if (!worldState) {
+      addMessage('欢迎来到海岛生存游戏！', false);
+    }
+    addMessage('📋 查看今日任务，完成任务获得丰厚奖励！', false);
+  } else {
+    addMessage('欢迎回来！继续你的生存之旅。', false);
+    updateResourceQuestProgress(false);
+    updateExploreQuestProgress(false);
+  }
   
-  addMessage('欢迎来到海岛生存游戏！');
-  addMessage('📋 查看今日任务，完成任务获得丰厚奖励！');
-  
-  updateResourceQuestProgress();
-  updateExploreQuestProgress();
-  
+  _saveWorldState();
+
   setInterval(() => {
-    survivalStore.resetDaily();
+    const today = new Date().toDateString();
+    if (survivalStore.currentDate !== today) {
+      const dailyInitialActionCount = {};
+      survivalStore.resetDaily(
+        deepClone(resources.value),
+        exploredCount.value,
+        dailyInitialActionCount
+      );
+      addMessage('🌅 新的一天开始了！今日任务已刷新。', false);
+      updateResourceQuestProgress(false);
+      updateExploreQuestProgress(false);
+      _saveWorldState();
+    }
   }, 60000);
   
   setInterval(() => {
@@ -373,13 +453,21 @@ onMounted(() => {
           type: 'error'
         }
       ).then(() => {
-        resources.value.food = 100;
-        resources.value.water = 100;
-        resources.value.wood = 100;
-        resources.value.stone = 100;
-        addMessage('重新开始游戏！');
+        _resetAll();
+        const resetActionCount = {};
+        survivalStore.generateDailyQuests(
+          deepClone(INITIAL_RESOURCES),
+          INITIAL_MAP_GRID.filter(c => c.explored).length,
+          resetActionCount
+        );
+        addMessage('重新开始游戏！', false);
         updateResourceQuestProgress();
+        updateExploreQuestProgress();
+        _saveWorldState();
       });
+    } else {
+      updateResourceQuestProgress();
+      _saveWorldState();
     }
   }, 60000);
 });
