@@ -70,3 +70,41 @@ export interface DashboardStats {
   recentOrders: Order[];
   topProducts: Product[];
 }
+
+export interface QuestObjective {
+  type: 'resource' | 'action' | 'explore';
+  resource?: string;
+  action?: string;
+  target: number;
+  current: number;
+  label: string;
+}
+
+export interface Quest {
+  id: string;
+  title: string;
+  description: string;
+  type: 'main' | 'side';
+  objectives: QuestObjective[];
+  rewards: Record<string, number>;
+  rewardText: string;
+  completedAt?: string;
+}
+
+export interface QuestResources {
+  food: number;
+  water: number;
+  wood: number;
+  stone: number;
+}
+
+export interface LogMessage {
+  time: string;
+  content: string;
+}
+
+export interface MapCell {
+  type: string;
+  icon: string;
+  explored: boolean;
+}

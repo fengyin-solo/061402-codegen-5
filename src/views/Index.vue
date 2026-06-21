@@ -39,6 +39,8 @@
           </div>
         </div>
       </div>
+
+      <QuestBoard @claim-reward="handleClaimReward" />
       
       <div class="actions-panel">
         <h3>📋 可执行操作</h3>
@@ -90,10 +92,19 @@
       
       <div class="map-panel">
         <h3>🗺️ 海岛地图</h3>
+        <div class="map-explore-progress">
+          <span class="progress-label">探索进度</span>
+          <span class="progress-value">{{ exploredCount }} / {{ totalCells }}</span>
+          <el-progress 
+            :percentage="Math.floor((exploredCount / totalCells) * 100)" 
+            :stroke-width="12"
+            :show-text="false"
+          />
+        </div>
         <div class="map-container">
           <div class="map-grid">
             <div v-for="(cell, index) in mapGrid" :key="index" 
-                 :class="'map-cell ' + cell.type"
+                 :class="'map-cell ' + cell.type + (cell.explored ? ' explored' : '')"
                  @click="exploreCell(index)">
               {{ cell.icon }}
             </div>
@@ -122,7 +133,7 @@
     
     <div class="message-log">
       <h3>📜 生存日志</h3>
-      <div class="log-list">
+      <div class="log-list" ref="logListRef">
         <div v-for="(msg, index) in messageLog" :key="index" class="log-item">
           <span class="log-time">{{ msg.time }}</span>
           <span class="log-content">{{ msg.content }}</span>
@@ -133,8 +144,13 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
+import { ref, computed, onMounted, watch, nextTick } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
+import QuestBoard from './QuestBoard.vue';
+import { useSurvivalStore } from '../store';
+
+const survivalStore = useSurvivalStore();
+const logListRef = ref(null);
 
 const resources = ref({
   food: 100,
@@ -159,18 +175,61 @@ const mapGrid = ref([
   { type: 'forest', icon: '🌳', explored: false }
 ]);
 
+const totalCells = computed(() => mapGrid.value.length);
+const exploredCount = computed(() => mapGrid.value.filter(cell => cell.explored).length);
+
+const scrollLogToBottom = async () => {
+  await nextTick();
+  if (logListRef.value) {
+    logListRef.value.scrollTop = logListRef.value.scrollHeight;
+  }
+};
+
 const addMessage = (content) => {
   const now = new Date();
   const time = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
   messageLog.value.push({ time, content });
-  // 只保留最近20条日志
-  if (messageLog.value.length > 20) {
+  if (messageLog.value.length > 50) {
     messageLog.value.shift();
   }
+  scrollLogToBottom();
 };
 
-const performAction = (name, cost, gain, time) => {
-  // 检查资源是否足够
+const updateResourceQuestProgress = () => {
+  survivalStore.updateResourceProgress(resources.value);
+};
+
+const updateExploreQuestProgress = () => {
+  survivalStore.updateExploreProgress(exploredCount.value);
+};
+
+const handleClaimReward = (rewards, quest) => {
+  for (const [resource, amount] of Object.entries(rewards)) {
+    if (resources.value[resource] !== undefined) {
+      resources.value[resource] += amount;
+    }
+  }
+  
+  const rewardList = Object.entries(rewards)
+    .map(([key, value]) => `${value}${getResourceLabel(key)}`)
+    .join('、');
+  
+  addMessage(`🎁 完成任务「${quest.title}」，获得奖励：${rewardList}`);
+  
+  updateResourceQuestProgress();
+};
+
+const getResourceLabel = (key) => {
+  const labels = {
+    food: '食物',
+    water: '淡水',
+    wood: '木材',
+    stone: '石头'
+  };
+  return labels[key] || key;
+};
+
+const performAction = (name, cost, gain, time, actionName) => {
   for (const [resource, amount] of Object.entries(cost)) {
     if (resources.value[resource] < amount) {
       ElMessage.error(`资源不足，无法${name}`);
@@ -178,50 +237,56 @@ const performAction = (name, cost, gain, time) => {
     }
   }
   
-  // 消耗资源
   for (const [resource, amount] of Object.entries(cost)) {
     resources.value[resource] -= amount;
   }
   
   addMessage(`开始${name}...`);
+  updateResourceQuestProgress();
   
-  // 模拟耗时
   setTimeout(() => {
-    // 获得资源
     for (const [resource, amount] of Object.entries(gain)) {
       resources.value[resource] += amount;
     }
-    addMessage(`${name}完成！获得了${Object.entries(gain).map(([k, v]) => `${v}${k}`).join('、')}`);
+    
+    if (actionName) {
+      survivalStore.updateActionProgress(actionName);
+    }
+    
+    const gainText = Object.entries(gain).map(([k, v]) => `${v}${getResourceLabel(k)}`).join('、');
+    addMessage(`${name}完成！获得了${gainText}`);
     ElMessage.success(`${name}完成！`);
+    
+    updateResourceQuestProgress();
   }, time);
   
   return true;
 };
 
 const gatherFood = () => {
-  performAction('采集食物', {}, { food: 20 }, 30000);
+  performAction('采集食物', {}, { food: 20 }, 30000, 'gatherFood');
 };
 
 const collectWater = () => {
-  performAction('收集淡水', {}, { water: 30 }, 60000);
+  performAction('收集淡水', {}, { water: 30 }, 60000, 'collectWater');
 };
 
 const chopWood = () => {
-  performAction('砍伐木材', {}, { wood: 15 }, 120000);
+  performAction('砍伐木材', {}, { wood: 15 }, 120000, 'chopWood');
 };
 
 const mineStone = () => {
-  performAction('挖掘石头', {}, { stone: 10 }, 180000);
+  performAction('挖掘石头', {}, { stone: 10 }, 180000, 'mineStone');
 };
 
 const buildShelter = () => {
-  if (performAction('建造庇护所', { wood: 50, stone: 30 }, {}, 300000)) {
+  if (performAction('建造庇护所', { wood: 50, stone: 30 }, {}, 300000, 'buildShelter')) {
     addMessage('庇护所建造完成！你现在有了一个安全的住所。');
   }
 };
 
 const craftTools = () => {
-  if (performAction('制作工具', { wood: 20, stone: 10 }, {}, 120000)) {
+  if (performAction('制作工具', { wood: 20, stone: 10 }, {}, 120000, 'craftTools')) {
     addMessage('工具制作完成！你的工作效率提高了。');
   }
 };
@@ -247,7 +312,6 @@ const exploreCell = (index) => {
     setTimeout(() => {
       cell.explored = true;
       
-      // 随机事件
       const random = Math.random();
       if (random < 0.3) {
         const foodGain = Math.floor(Math.random() * 20) + 10;
@@ -270,15 +334,32 @@ const exploreCell = (index) => {
         addMessage(`探索遇到了危险！损失了10食物和10水`);
         ElMessage.warning(`探索遇到了危险！损失了10食物和10水`);
       }
+      
+      updateResourceQuestProgress();
+      updateExploreQuestProgress();
     }, 5000);
   }).catch(() => {
     addMessage('取消了探索');
   });
 };
 
+watch(resources, () => {
+  updateResourceQuestProgress();
+}, { deep: true });
+
 onMounted(() => {
+  survivalStore.generateDailyQuests();
+  
   addMessage('欢迎来到海岛生存游戏！');
-  // 定期消耗资源
+  addMessage('📋 查看今日任务，完成任务获得丰厚奖励！');
+  
+  updateResourceQuestProgress();
+  updateExploreQuestProgress();
+  
+  setInterval(() => {
+    survivalStore.resetDaily();
+  }, 60000);
+  
   setInterval(() => {
     resources.value.food -= 5;
     resources.value.water -= 5;
@@ -297,9 +378,10 @@ onMounted(() => {
         resources.value.wood = 100;
         resources.value.stone = 100;
         addMessage('重新开始游戏！');
+        updateResourceQuestProgress();
       });
     }
-  }, 60000); // 每分钟消耗一次
+  }, 60000);
 });
 </script>
 
@@ -375,6 +457,7 @@ onMounted(() => {
   border-radius: 12px;
   padding: 30px;
   margin-bottom: 30px;
+  margin-top: 30px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
 }
 
@@ -441,6 +524,25 @@ onMounted(() => {
   margin: 0 0 20px 0;
   font-size: 24px;
   color: #333;
+}
+
+.map-explore-progress {
+  background: #f5f7fa;
+  padding: 15px 20px;
+  border-radius: 8px;
+  margin-bottom: 20px;
+}
+
+.progress-label {
+  font-size: 14px;
+  color: #666;
+  margin-right: 10px;
+}
+
+.progress-value {
+  font-size: 14px;
+  font-weight: bold;
+  color: #409eff;
 }
 
 .map-container {
@@ -516,6 +618,7 @@ onMounted(() => {
   border: 1px solid #eee;
   border-radius: 8px;
   padding: 10px;
+  scroll-behavior: smooth;
 }
 
 .log-item {
